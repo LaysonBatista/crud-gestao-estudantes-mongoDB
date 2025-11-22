@@ -1,46 +1,144 @@
 package reports;
 
-import conexion.*;
-import java.sql.*;
+import conexion.MongoConnection;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoDatabase;
+
+import org.bson.Document;
 
 public class Relatorios {
     private static final double MEDIA_APROVACAO_PADRAO = 7.0;
 
+    // ======= COLEÇÕES MONGO =======
+    private final MongoCollection<Document> notas;
+    private final MongoCollection<Document> matriculas;
+    private final MongoCollection<Document> cursos;
+
+    public Relatorios() {
+        MongoDatabase db = MongoConnection.getDatabase();
+        this.notas = db.getCollection("notas");
+        this.matriculas = db.getCollection("matriculas");
+        this.cursos = db.getCollection("cursos");
+    }
+
     /**
-     * Relátorio 1: Média por curso e semestre.
+     * Relatório 1: Média por curso e semestre.
      * Agrupa por curso e semestre, considerando as notas lançadas.
      */
-
     public void mediaPorCursoESemestre() {
-        String sql =
-            "SELECT c.id_curso, c.nome_curso, n.semestre, " +
-            "       ROUND(AVG(n.nota_estudante), 2) AS media " +
-            "FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "JOIN CURSOS c      ON c.id_curso = m.id_curso " +
-            "GROUP BY c.id_curso, c.nome_curso, n.semestre " +
-            "ORDER BY c.nome_curso, n.semestre";
-
-        try (Connection cn = Conexao.getConnection();
-             PreparedStatement ps = cn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-
-            System.out.println("\n== MÉDIA POR CURSO E SEMESTRE ==");
-            System.out.printf("%-4s  %-30s  %-10s  %-6s%n",
-                    "ID", "CURSO", "SEMESTRE", "MÉDIA");
-            System.out.println("---------------------------------------------------------------");
-
-            while (rs.next()) {
-                int idCurso = rs.getInt("id_curso");
-                String nomeCurso = rs.getString("nome_curso");
-                String semestre = rs.getString("semestre");
-                double media = rs.getDouble("media");
-
-                System.out.printf("%-4d  %-30s  %-10s  %-6.2f%n",
-                        idCurso, nomeCurso, semestre, media);
+        // Carregar todas as matrículas em memória: id_matricula -> doc
+        Map<Integer, Document> matriculasPorId = new HashMap<>();
+        try (MongoCursor<Document> cur = matriculas.find().iterator()) {
+            while (cur.hasNext()) {
+                Document m = cur.next();
+                Object idMatObj = m.get("id_matricula");
+                if (idMatObj instanceof Number) {
+                    int idMat = ((Number) idMatObj).intValue();
+                    matriculasPorId.put(idMat, m);
+                }
             }
-        } catch (SQLException e) {
-            System.err.println("Erro ao calcular média por curso e semestre: " + e.getMessage());
+        }
+
+        // Carregar todos os cursos em memória: id_curso -> doc
+        Map<Integer, Document> cursosPorId = new HashMap<>();
+        try (MongoCursor<Document> cur = cursos.find().iterator()) {
+            while (cur.hasNext()) {
+                Document c = cur.next();
+                Object idCursoObj = c.get("id_curso");
+                if (idCursoObj instanceof Number) {
+                    int idCurso = ((Number) idCursoObj).intValue();
+                    cursosPorId.put(idCurso, c);
+                }
+            }
+        }
+
+        // Estrutura para acumular soma e contagem por (curso, semestre)
+        class StatsMedia {
+            int idCurso;
+            String nomeCurso;
+            String semestre;
+            double somaNotas;
+            int qtdNotas;
+        }
+
+        Map<String, StatsMedia> mapa = new HashMap<>();
+
+        // Percorrer TODAS as notas e agrupar por curso+semestre
+        try (MongoCursor<Document> curNotas = notas.find().iterator()) {
+            while (curNotas.hasNext()) {
+                Document n = curNotas.next();
+
+                Object notaObj = n.get("nota_estudante");
+                Object semestreObj = n.get("semestre");
+                Object idMatObj = n.get("id_matricula");
+
+                if (!(notaObj instanceof Number) || !(semestreObj instanceof String) || !(idMatObj instanceof Number)) {
+                    continue; // ignora registros com dados faltando/estranhos
+                }
+
+                double nota = ((Number) notaObj).doubleValue();
+                String semestre = (String) semestreObj;
+                int idMat = ((Number) idMatObj).intValue();
+
+                Document m = matriculasPorId.get(idMat);
+                if (m == null) continue; // matrícula não encontrada
+
+                Object idCursoObj = m.get("id_curso");
+                if (!(idCursoObj instanceof Number)) continue;
+
+                int idCurso = ((Number) idCursoObj).intValue();
+                Document c = cursosPorId.get(idCurso);
+                if (c == null) continue; // curso não encontrado
+
+                String nomeCurso = c.getString("nome_curso");
+                if (nomeCurso == null) nomeCurso = "(sem nome)";
+
+                String chave = idCurso + "|" + nomeCurso + "|" + semestre;
+                StatsMedia stats = mapa.get(chave);
+                if (stats == null) {
+                    stats = new StatsMedia();
+                    stats.idCurso = idCurso;
+                    stats.nomeCurso = nomeCurso;
+                    stats.semestre = semestre;
+                    stats.somaNotas = 0.0;
+                    stats.qtdNotas = 0;
+                    mapa.put(chave, stats);
+                }
+
+                stats.somaNotas += nota;
+                stats.qtdNotas++;
+            }
+        }
+
+        // Transformar em lista e ordenar por nomeCurso, semestre
+        List<StatsMedia> lista = new ArrayList<>(mapa.values());
+        lista.sort((a, b) -> {
+            int cmp = a.nomeCurso.compareToIgnoreCase(b.nomeCurso);
+            if (cmp != 0) return cmp;
+            return a.semestre.compareToIgnoreCase(b.semestre);
+        });
+
+        // Impressão
+        System.out.println("\n== MÉDIA POR CURSO E SEMESTRE ==");
+        System.out.printf("%-4s  %-30s  %-10s  %-6s%n",
+                "ID", "CURSO", "SEMESTRE", "MÉDIA");
+        System.out.println("---------------------------------------------------------------");
+
+        for (StatsMedia s : lista) {
+            double media = s.qtdNotas > 0 ? (s.somaNotas / s.qtdNotas) : 0.0;
+            System.out.printf("%-4d  %-30s  %-10s  %-6.2f%n",
+                    s.idCurso, s.nomeCurso, s.semestre, media);
+        }
+
+        if (lista.isEmpty()) {
+            System.out.println("(Nenhum dado encontrado para médias por curso e semestre)");
         }
     }
 
@@ -48,60 +146,124 @@ public class Relatorios {
      * Relatório 2: Desempenho por curso com média de aprovação definida no código.
      * Chama a versão parametrizada com o corte padrão.
      */
-
-        public void desempenhoPorCurso() {
+    public void desempenhoPorCurso() {
         desempenhoPorCurso(MEDIA_APROVACAO_PADRAO);
     }
 
     /**
      * Relatório 2 (parametrizado): Desempenho por curso.
      * Calcula: Média geral, quantidade de notas, aprovados, reprovados e taxa de aprovação.
-     * @param mediaAprovacao
      */
-
-     public void desempenhoPorCurso(double mediaAprovacao) {
-        String sql =
-            "SELECT c.id_curso, c.nome_curso, " +
-            "       ROUND(AVG(n.nota_estudante), 2) AS media_geral, " +
-            "       COUNT(*) AS qtd_notas, " +
-            "       SUM(n.nota_estudante >= ?) AS aprovados, " +       // boolean vira 0/1 no MySQL
-            "       SUM(n.nota_estudante <  ?) AS reprovados, " +
-            "       ROUND( (SUM(n.nota_estudante >= ?) / COUNT(*)) * 100, 2) AS taxa_aprovacao " +
-            "FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "JOIN CURSOS c      ON c.id_curso = m.id_curso " +
-            "GROUP BY c.id_curso, c.nome_curso " +
-            "ORDER BY c.nome_curso";
-
-        try (Connection cn = Conexao.getConnection();
-             PreparedStatement ps = cn.prepareStatement(sql)) {
-
-            // Preenche o mesmo parâmetro nas 3 posições (>=, <, >=)
-            ps.setDouble(1, mediaAprovacao);
-            ps.setDouble(2, mediaAprovacao);
-            ps.setDouble(3, mediaAprovacao);
-
-            try (ResultSet rs = ps.executeQuery()) {
-                System.out.println("\n== DESEMPENHO POR CURSO (corte: " + mediaAprovacao + ") ==");
-                System.out.printf("%-4s  %-30s  %-6s  %-8s  %-9s  %-10s  %-6s%n",
-                        "ID", "CURSO", "MÉDIA", "QTD_NOTA", "APROVADOS", "REPROVADOS", "%APR");
-                System.out.println("-------------------------------------------------------------------------------");
-
-                while (rs.next()) {
-                    int idCurso = rs.getInt("id_curso");
-                    String nomeCurso = rs.getString("nome_curso");
-                    double mediaGeral = rs.getDouble("media_geral");
-                    int qtdNotas = rs.getInt("qtd_notas");
-                    int aprovados = rs.getInt("aprovados");
-                    int reprovados = rs.getInt("reprovados");
-                    double taxa = rs.getDouble("taxa_aprovacao");
-
-                    System.out.printf("%-4d  %-30s  %-6.2f  %-8d  %-9d  %-10d  %-6.2f%n",
-                            idCurso, nomeCurso, mediaGeral, qtdNotas, aprovados, reprovados, taxa);
+    public void desempenhoPorCurso(double mediaAprovacao) {
+        // Carregar matrículas em memória
+        Map<Integer, Document> matriculasPorId = new HashMap<>();
+        try (MongoCursor<Document> cur = matriculas.find().iterator()) {
+            while (cur.hasNext()) {
+                Document m = cur.next();
+                Object idMatObj = m.get("id_matricula");
+                if (idMatObj instanceof Number) {
+                    int idMat = ((Number) idMatObj).intValue();
+                    matriculasPorId.put(idMat, m);
                 }
             }
-        } catch (SQLException e) {
-            System.err.println("Erro ao calcular desempenho por curso: " + e.getMessage());
+        }
+
+        // Carregar cursos em memória
+        Map<Integer, Document> cursosPorId = new HashMap<>();
+        try (MongoCursor<Document> cur = cursos.find().iterator()) {
+            while (cur.hasNext()) {
+                Document c = cur.next();
+                Object idCursoObj = c.get("id_curso");
+                if (idCursoObj instanceof Number) {
+                    int idCurso = ((Number) idCursoObj).intValue();
+                    cursosPorId.put(idCurso, c);
+                }
+            }
+        }
+
+        // Estrutura para acumular dados por curso
+        class StatsCurso {
+            int idCurso;
+            String nomeCurso;
+            double somaNotas;
+            int qtdNotas;
+            int aprovados;
+            int reprovados;
+        }
+
+        Map<Integer, StatsCurso> mapa = new HashMap<>();
+
+        // Percorrer todas as notas e acumular por curso
+        try (MongoCursor<Document> curNotas = notas.find().iterator()) {
+            while (curNotas.hasNext()) {
+                Document n = curNotas.next();
+
+                Object notaObj = n.get("nota_estudante");
+                Object idMatObj = n.get("id_matricula");
+                if (!(notaObj instanceof Number) || !(idMatObj instanceof Number)) {
+                    continue;
+                }
+
+                double nota = ((Number) notaObj).doubleValue();
+                int idMat = ((Number) idMatObj).intValue();
+
+                Document m = matriculasPorId.get(idMat);
+                if (m == null) continue;
+
+                Object idCursoObj = m.get("id_curso");
+                if (!(idCursoObj instanceof Number)) continue;
+
+                int idCurso = ((Number) idCursoObj).intValue();
+                Document c = cursosPorId.get(idCurso);
+                if (c == null) continue;
+
+                String nomeCurso = c.getString("nome_curso");
+                if (nomeCurso == null) nomeCurso = "(sem nome)";
+
+                StatsCurso stats = mapa.get(idCurso);
+                if (stats == null) {
+                    stats = new StatsCurso();
+                    stats.idCurso = idCurso;
+                    stats.nomeCurso = nomeCurso;
+                    stats.somaNotas = 0.0;
+                    stats.qtdNotas = 0;
+                    stats.aprovados = 0;
+                    stats.reprovados = 0;
+                    mapa.put(idCurso, stats);
+                }
+
+                stats.somaNotas += nota;
+                stats.qtdNotas++;
+
+                if (nota >= mediaAprovacao) {
+                    stats.aprovados++;
+                } else {
+                    stats.reprovados++;
+                }
+            }
+        }
+
+        // Transformar em lista e ordenar por nome do curso (igual ORDER BY c.nome_curso)
+        List<StatsCurso> lista = new ArrayList<>(mapa.values());
+        lista.sort((a, b) -> a.nomeCurso.compareToIgnoreCase(b.nomeCurso));
+
+        // Impressão
+        System.out.println("\n== DESEMPENHO POR CURSO (corte: " + mediaAprovacao + ") ==");
+        System.out.printf("%-4s  %-30s  %-6s  %-8s  %-9s  %-10s  %-6s%n",
+                "ID", "CURSO", "MÉDIA", "QTD_NOTA", "APROVADOS", "REPROVADOS", "%APR");
+        System.out.println("-------------------------------------------------------------------------------");
+
+        for (StatsCurso s : lista) {
+            double mediaGeral = s.qtdNotas > 0 ? (s.somaNotas / s.qtdNotas) : 0.0;
+            double taxa = s.qtdNotas > 0 ? ((double) s.aprovados / s.qtdNotas) * 100.0 : 0.0;
+
+            System.out.printf("%-4d  %-30s  %-6.2f  %-8d  %-9d  %-10d  %-6.2f%n",
+                    s.idCurso, s.nomeCurso, mediaGeral, s.qtdNotas,
+                    s.aprovados, s.reprovados, taxa);
+        }
+
+        if (lista.isEmpty()) {
+            System.out.println("(Nenhum dado encontrado para desempenho por curso)");
         }
     }
 
