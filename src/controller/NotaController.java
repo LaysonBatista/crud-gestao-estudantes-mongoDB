@@ -1,409 +1,429 @@
 package controller;
 
-import java.sql.*;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
 
-import conexion.*;
+import org.bson.Document;
+
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Sorts;
+
+import conexion.MongoConnection;
 
 public class NotaController {
 
-    // ----------------------------- SQLs ----------------------------
-    private static final String SQL_INSERT = "INSERT INTO NOTAS (id_matricula, nota_estudante, semestre) VALUES (?,?,?)";
-    private static final String SQL_DELETE = "DELETE FROM NOTAS WHERE id_nota=?";
-    private static final String SQL_NOTA_BY_ID = "SELECT id_nota, nota_estudante, semestre FROM NOTAS WHERE id_nota=?";
+    // Coleção
+    private final MongoCollection<Document> notas;
+    private final MongoCollection<Document> matriculas;
+    private final MongoCollection<Document> estudantes;
+    private final MongoCollection<Document> cursos;
 
-    private static final String SQL_UPDATE_NOTA = "UPDATE NOTAS SET nota_estudante=?, semestre=? WHERE id_nota=?";
-    private static final String SQL_FINDALL_RESUMO = "SELECT n.id_nota, n.nota_estudante, n.semestre, " +
-            "       m.id_matricula, e.nome AS estudante, c.nome_curso AS curso " +
-            "FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "JOIN ESTUDANTES e ON e.id_estudante = m.id_estudante " +
-            "JOIN CURSOS c ON c.id_curso = m.id_curso " +
-            "ORDER BY n.id_nota";
-    private static final String SQL_FINDBY_MATRICULA = "SELECT id_nota, nota_estudante, semestre FROM NOTAS WHERE id_matricula=? ORDER BY id_nota";
-
-    final String SQL = "SELECT c.id_curso, c.nome_curso, " +
-            "       GROUP_CONCAT(DISTINCT n.semestre ORDER BY n.semestre SEPARATOR ', ') AS semestres " +
-            "FROM CURSOS c " +
-            "LEFT JOIN MATRICULAS m ON m.id_curso = c.id_curso " +
-            "LEFT JOIN NOTAS n ON n.id_matricula = m.id_matricula " +
-            "GROUP BY c.id_curso, c.nome_curso " +
-            "ORDER BY c.id_curso";
-    private static final String SQL_NOTAS_POR_CURSO_SEM = "SELECT n.id_nota, n.nota_estudante, n.semestre, m.id_matricula, "
-            +
-            "       e.nome AS estudante, c.nome_curso AS curso " +
-            "FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "JOIN ESTUDANTES e ON e.id_estudante = m.id_estudante " +
-            "JOIN CURSOS c ON c.id_curso = m.id_curso " +
-            "WHERE c.id_curso = ? AND n.semestre = ? " +
-            "ORDER BY n.id_nota";
-
-    private static final String SQL_ESTUDANTES_RAPIDO = "SELECT e.id_estudante, e.nome, COUNT(n.id_nota) AS qtd_notas "
-            +
-            "FROM ESTUDANTES e " +
-            "LEFT JOIN MATRICULAS m ON m.id_estudante = e.id_estudante " +
-            "LEFT JOIN NOTAS n ON n.id_matricula = m.id_matricula " +
-            "GROUP BY e.id_estudante, e.nome " +
-            "ORDER BY e.nome";
-
-    // notas do estudante por ID (preciso)
-    private static final String SQL_NOTAS_POR_ESTUDANTE_ID = "SELECT n.id_nota, n.nota_estudante, n.semestre, m.id_matricula, "
-            +
-            "       e.nome AS estudante, c.nome_curso AS curso " +
-            "FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "JOIN ESTUDANTES e ON e.id_estudante = m.id_estudante " +
-            "JOIN CURSOS c ON c.id_curso = m.id_curso " +
-            "WHERE e.id_estudante = ? " +
-            "ORDER BY n.semestre, n.id_nota";
-
-    // estudantes + qtd de matrículas
-    private static final String SQL_ESTUDANTES_QTD_MATS = "SELECT e.id_estudante, e.nome, COUNT(m.id_matricula) AS qtd_mats "
-            +
-            "FROM ESTUDANTES e " +
-            "LEFT JOIN MATRICULAS m ON m.id_estudante = e.id_estudante " +
-            "GROUP BY e.id_estudante, e.nome " +
-            "ORDER BY e.nome";
-
-    // matrículas do estudante (curso + status)
-    private static final String SQL_MATRICULAS_DO_ESTUDANTE = "SELECT m.id_matricula, m.status_matricula, c.nome_curso "
-            +
-            "FROM MATRICULAS m " +
-            "JOIN CURSOS c ON c.id_curso = m.id_curso " +
-            "WHERE m.id_estudante = ? " +
-            "ORDER BY m.id_matricula";
-
-    // ------------ MÉTODOS -------------------------------
-    public void inserir(Scanner in) {
-        System.out.print("ID matrícula: ");
-        int idM = Integer.parseInt(in.nextLine());
-        System.out.print("Nota (0–100 ou 0–10, conforme seu padrão): ");
-        double nota = Double.parseDouble(in.nextLine());
-        System.out.print("Semestre (ex.: 2024.1): ");
-        String semestre = in.nextLine();
-
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_INSERT)) {
-            ps.setInt(1, idM);
-            ps.setDouble(2, nota);
-            ps.setString(3, semestre);
-            System.out.println(ps.executeUpdate() > 0 ? "Nota inserida!" : "Falha ao inserir nota.");
-        } catch (SQLIntegrityConstraintViolationException fk) {
-            System.err.println("Matrícula inexistente (FK).");
-        } catch (SQLException e) {
-            System.err.println("Erro ao inserir nota: " + e.getMessage());
-        }
-        listar(); // já mostra tudo após inserir
+    public NotaController() {
+        MongoDatabase db = MongoConnection.getDatabase();
+        this.notas = db.getCollection("notas");
+        this.matriculas = db.getCollection("matriculas");
+        this.estudantes = db.getCollection("estudantes");
+        this.cursos = db.getCollection("cursos");
     }
 
-    public void atualizar(java.util.Scanner in) {
-        // Mostra a lista completa (ou use seus filtros antes)
-        listar();
+    // ========= util para gerar próximo ID inteiro =========
+    private int getNextId(MongoCollection<Document> col, String field) {
+        Document last = col.find()
+                .sort(Sorts.descending(field))
+                .first();
 
-        System.out.print("\nID da nota que deseja atualizar: ");
-        String idTxt = in.nextLine().trim();
-        int idNota;
-        try {
-            idNota = Integer.parseInt(idTxt);
-        } catch (NumberFormatException e) {
-            System.out.println("ID inválido.");
+        if (last == null || last.get(field) == null)
+            return 1;
+
+        Object v = last.get(field);
+        if (v instanceof Number) {
+            return ((Number) v).intValue() + 1;
+        }
+        return 1;
+    }
+
+    // leitura de double segura
+    private double lerDouble(Scanner in, String label) {
+        while (true) {
+            System.out.print(label);
+            String s = in.nextLine().replace(",", ".").trim();
+            try {
+                return Double.parseDouble(s);
+            } catch (NumberFormatException e) {
+                System.out.println("Valor inválido. Digite um número (ex: 8.5).");
+            }
+        }
+    }
+
+    // ================= METÓDOS
+    // ====================================================
+
+    // INSERIR NOTA (pedindo id_matricula)
+    public void inserir(Scanner in) {
+        System.out.print("ID matrícula: ");
+        int idMat = Integer.parseInt(in.nextLine());
+
+        // valida matrícula
+        Document mat = matriculas.find(Filters.eq("id_matricula", idMat)).first();
+        if (mat == null) {
+            System.err.println("Matrícula não encontrada.");
             return;
         }
 
-        try (var cn = conexion.Conexao.getConnection()) {
+        double nota = lerDouble(in, "Nota do estudante: ");
+        System.out.print("Semestre (ex: 2024/1): ");
+        String semestre = in.nextLine();
 
-            // 1) Busca os valores atuais, para permitir ENTER = manter
-            Double notaAtual = null;
-            String semestreAtual = null;
+        try {
+            int idNota = getNextId(notas, "id_nota");
 
-            try (var ps = cn.prepareStatement(SQL_NOTA_BY_ID)) {
-                ps.setInt(1, idNota);
-                try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        System.out.println("Nota não encontrada.");
-                        return;
-                    }
-                    notaAtual = rs.getDouble("nota_estudante");
-                    semestreAtual = rs.getString("semestre");
-                }
-            }
+            Document doc = new Document()
+                    .append("id_nota", idNota)
+                    .append("id_matricula", idMat)
+                    .append("nota_estudante", nota)
+                    .append("semestre", semestre);
 
-            // 2) Pergunta novos valores (ENTER mantém)
-            System.out.printf("Nova nota (atual: %.2f) [ENTER p/ manter]: ", notaAtual);
-            String notaTxt = in.nextLine().trim();
-            double novaNota = notaTxt.isEmpty() ? notaAtual : Double.parseDouble(notaTxt);
-
-            System.out.printf("Novo semestre (atual: %s) [ENTER p/ manter]: ", semestreAtual);
-            String novoSem = in.nextLine().trim();
-            String semestre = novoSem.isEmpty() ? semestreAtual : novoSem;
-
-            // 3) Atualiza
-            try (var ps = cn.prepareStatement(SQL_UPDATE_NOTA)) {
-                ps.setDouble(1, novaNota);
-                ps.setString(2, semestre);
-                ps.setInt(3, idNota);
-                int rows = ps.executeUpdate();
-                System.out.println(rows > 0 ? "Nota atualizada!" : "Nada atualizado.");
-            }
-
-        } catch (java.sql.SQLException e) {
-            System.err.println("Erro ao atualizar nota: " + e.getMessage());
-        } catch (NumberFormatException e) {
-            System.out.println("Valor de nota inválido.");
+            notas.insertOne(doc);
+            System.out.println("Nota inserida! (id_nota = " + idNota + ")");
+        } catch (Exception e) {
+            System.err.println("Erro ao inserir nota no Mongo: " + e.getMessage());
         }
     }
 
+    // ATUALIZAR NOTA
+    public void atualizar(Scanner in) {
+        listar();
+
+        System.out.print("ID da nota: ");
+        int idNota = Integer.parseInt(in.nextLine());
+
+        Document notaDoc = notas.find(Filters.eq("id_nota", idNota)).first();
+        if (notaDoc == null) {
+            System.out.println("Nota não encontrada.");
+            return;
+        }
+
+        double novaNota = lerDouble(in, "Nova nota: ");
+        System.out.print("Novo semestre: ");
+        String novoSemestre = in.nextLine();
+
+        try {
+            Document filtro = new Document("id_nota", idNota);
+            Document novosDados = new Document()
+                    .append("nota_estudante", novaNota)
+                    .append("semestre", novoSemestre);
+
+            Document update = new Document("$set", novosDados);
+
+            long modificados = notas.updateOne(filtro, update).getModifiedCount();
+            System.out.println(modificados > 0 ? "Nota atualizada!" : "Nada atualizado.");
+        } catch (Exception e) {
+            System.err.println("Erro ao atualizar nota no Mongo: " + e.getMessage());
+        }
+    }
+
+    // REMOVER NOTA
     public void remover(Scanner in) {
         listar();
+
         System.out.print("ID da nota: ");
         int id = Integer.parseInt(in.nextLine());
 
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_DELETE)) {
-            ps.setInt(1, id);
-            System.out.println(ps.executeUpdate() > 0 ? "Nota removida!" : "Nada removido.");
-        } catch (SQLException e) {
-            System.err.println("Erro ao remover nota: " + e.getMessage());
+        try {
+            long removidos = notas.deleteOne(Filters.eq("id_nota", id)).getDeletedCount();
+            System.out.println(removidos > 0 ? "Nota removida!" : "Nada removido.");
+        } catch (Exception e) {
+            System.err.println("Erro ao remover nota no Mongo: " + e.getMessage());
         }
     }
 
+    // LISTAR TODAS AS NOTAS
     public void listar() {
-        List<String> lista = new ArrayList<>();
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_FINDALL_RESUMO);
-                ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                lista.add(String.format("#%d | %.2f (%s) | mat:%d | %s -> %s",
-                        rs.getInt("id_nota"),
-                        rs.getDouble("nota_estudante"),
-                        rs.getString("semestre"),
-                        rs.getInt("id_matricula"),
-                        rs.getString("estudante"),
-                        rs.getString("curso")));
+        System.out.println("\n-- NOTAS --");
+        System.out.printf("%-4s | %-20s | %-25s | %-10s | %-8s%n",
+                "ID", "Estudante", "Curso", "Semestre", "Nota");
+        System.out.println("-----+----------------------+---------------------------+------------+----------");
+
+        boolean vazio = true;
+
+        try (MongoCursor<Document> cursor = notas.find()
+                .sort(Sorts.ascending("id_nota"))
+                .iterator()) {
+
+            while (cursor.hasNext()) {
+                vazio = false;
+                Document n = cursor.next();
+
+                int idNota = ((Number) n.get("id_nota")).intValue();
+                double nota = ((Number) n.get("nota_estudante")).doubleValue();
+                String semestre = n.getString("semestre");
+                int idMat = ((Number) n.get("id_matricula")).intValue();
+
+                Document mat = matriculas.find(Filters.eq("id_matricula", idMat)).first();
+
+                String aluno = "(desconhecido)";
+                String curso = "(desconhecido)";
+
+                if (mat != null) {
+                    int idEstudante = ((Number) mat.get("id_estudante")).intValue();
+                    int idCurso = ((Number) mat.get("id_curso")).intValue();
+
+                    Document est = estudantes.find(Filters.eq("id_estudante", idEstudante)).first();
+                    Document cur = cursos.find(Filters.eq("id_curso", idCurso)).first();
+
+                    if (est != null)
+                        aluno = est.getString("nome");
+                    if (cur != null)
+                        curso = cur.getString("nome_curso");
+                }
+
+                System.out.printf("%-4s | %-20s | %-25s | %-10s | %-8.2f%n",
+                        "#" + idNota, aluno, curso, semestre, nota);
             }
-        } catch (SQLException e) {
-            System.err.println("Erro ao listar notas: " + e.getMessage());
+
+        } catch (Exception e) {
+            System.err.println("Erro ao listar notas no Mongo: " + e.getMessage());
+            return;
         }
-        lista.forEach(System.out::println);
+
+        if (vazio) {
+            System.out.println("(Nenhuma nota cadastrada)");
+        }
     }
 
+    // LISTAR POR MATRÍCULA
     public void listarPorMatricula(Scanner in) {
         System.out.print("ID matrícula: ");
-        int idM = Integer.parseInt(in.nextLine());
+        int idMat = Integer.parseInt(in.nextLine());
 
         List<String> lista = new ArrayList<>();
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_FINDBY_MATRICULA)) {
-            ps.setInt(1, idM);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    lista.add(String.format("#%d | %.2f | %s",
-                            rs.getInt("id_nota"),
-                            rs.getDouble("nota_estudante"),
-                            rs.getString("semestre")));
-                }
-            }
-        } catch (SQLException e) {
-            System.err.println("Erro ao listar notas por matrícula: " + e.getMessage());
-        }
-        lista.forEach(System.out::println);
-    }
 
-    public void listarPorCursoSemestre(Scanner in) {
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_NOTAS_POR_CURSO_SEM)) {
+        try (MongoCursor<Document> cursor = notas.find(Filters.eq("id_matricula", idMat))
+                .sort(Sorts.ascending("id_nota"))
+                .iterator()) {
 
-            // ajuda: liste os cursos para a pessoa escolher
-            listarCursosRapido(cn);
+            while (cursor.hasNext()) {
+                Document n = cursor.next();
+                int idNota = ((Number) n.get("id_nota")).intValue();
+                double nota = ((Number) n.get("nota_estudante")).doubleValue();
+                String semestre = n.getString("semestre");
 
-            System.out.print("ID do curso: ");
-            int idCurso = Integer.parseInt(in.nextLine());
-            System.out.print("Semestre (ex.: 2024.1): ");
-            String sem = in.nextLine();
-
-            ps.setInt(1, idCurso);
-            ps.setString(2, sem);
-
-            try (ResultSet rs = ps.executeQuery()) {
-                System.out.println("\n-- NOTAS por CURSO e SEMESTRE --");
-                int count = 0;
-                while (rs.next()) {
-                    System.out.printf("#%d | %.2f (%s) | matricula:%d | %s -> %s%n",
-                            rs.getInt("id_nota"),
-                            rs.getDouble("nota_estudante"),
-                            rs.getString("semestre"),
-                            rs.getInt("id_matricula"),
-                            rs.getString("estudante"),
-                            rs.getString("curso"));
-                    count++;
-                }
-                if (count == 0)
-                    System.out.println("Nenhum registro.");
-                System.out.println();
-            }
-        } catch (SQLException e) {
-            System.err.println("Erro ao listar por curso/semestre: " + e.getMessage());
-        }
-    }
-
-    // helper: lista id/nome dos cursos para facilitar a escolha
-    private void listarCursosRapido(Connection cn) throws java.sql.SQLException {
-
-        try (var ps = cn.prepareStatement(SQL);
-                var rs = ps.executeQuery()) {
-
-            System.out.println("\nCURSOS (com semestres disponíveis):");
-            while (rs.next()) {
-                int id = rs.getInt("id_curso");
-                String nome = rs.getString("nome_curso");
-                String semestres = rs.getString("semestres");
-                if (semestres == null || semestres.isBlank())
-                    semestres = "-";
-                // >>> aqui troquei o separador por barra vertical
-                System.out.printf("  %d - %s | %s%n", id, nome, semestres);
-            }
-        }
-    }
-
-    public void listarPorEstudantePorId(java.util.Scanner in) {
-        try (var cn = conexion.Conexao.getConnection()) {
-
-            // mostrar a lista para facilitar a escolha
-            listarEstudantesRapido(cn);
-
-            System.out.print("\nID do estudante: ");
-            String idTxt = in.nextLine().trim();
-            int id;
-            try {
-                id = Integer.parseInt(idTxt);
-            } catch (NumberFormatException e) {
-                System.out.println("ID inválido.");
-                return;
+                lista.add(String.format("#%d | id_matricula=%d | %s | nota: %.2f",
+                        idNota, idMat, semestre, nota));
             }
 
-            try (var ps = cn.prepareStatement(SQL_NOTAS_POR_ESTUDANTE_ID)) {
-                ps.setInt(1, id);
-                try (var rs = ps.executeQuery()) {
-                    imprimirNotasResultset(rs, "\n-- NOTAS do ESTUDANTE (ID " + id + ") --");
-                }
-            }
         } catch (Exception e) {
-            System.err.println("Erro ao listar notas por estudante (ID): " + e.getMessage());
+            System.err.println("Erro ao listar notas da matrícula no Mongo: " + e.getMessage());
+            return;
+        }
+
+        if (lista.isEmpty()) {
+            System.out.println("(Nenhuma nota para essa matrícula)");
+        } else {
+            lista.forEach(System.out::println);
         }
     }
 
-    private void imprimirNotasResultset(java.sql.ResultSet rs, String titulo) throws java.sql.SQLException {
-        System.out.println(titulo);
-        int count = 0;
-        while (rs.next()) {
-            System.out.printf("#%d | %.2f | %s | %s - %s%n",
-                    rs.getInt("id_nota"),
-                    rs.getDouble("nota_estudante"),
-                    rs.getString("estudante"),
-                    rs.getString("curso"),
-                    rs.getString("semestre"));
-            count++;
-        }
-        if (count == 0)
-            System.out.println("Nenhum registro.");
+    // LISTAR POR CURSO + SEMESTRE
+    public void listarPorCursoSemestre(Scanner in) {
+        System.out.print("ID curso: ");
+        int idCurso = Integer.parseInt(in.nextLine());
 
-        System.out.println();
-        System.out.println("-".repeat(60));
-        System.out.println();
+        System.out.print("Semestre (ex: 2024/1): ");
+        String semestre = in.nextLine();
+
+        List<String> lista = new ArrayList<>();
+
+        try (MongoCursor<Document> cursor = notas.find(Filters.eq("semestre", semestre))
+                .sort(Sorts.ascending("id_nota"))
+                .iterator()) {
+
+            while (cursor.hasNext()) {
+                Document n = cursor.next();
+                int idNota = ((Number) n.get("id_nota")).intValue();
+                double nota = ((Number) n.get("nota_estudante")).doubleValue();
+                int idMat = ((Number) n.get("id_matricula")).intValue();
+
+                Document mat = matriculas.find(Filters.eq("id_matricula", idMat)).first();
+                if (mat == null)
+                    continue;
+
+                int idCursoDaMat = ((Number) mat.get("id_curso")).intValue();
+                if (idCursoDaMat != idCurso)
+                    continue; // nota de outro curso
+
+                int idEstudante = ((Number) mat.get("id_estudante")).intValue();
+
+                Document est = estudantes.find(Filters.eq("id_estudante", idEstudante)).first();
+                String nomeAluno = est != null ? est.getString("nome") : "(desconhecido)";
+
+                lista.add(String.format("#%d | %s | semestre %s | nota: %.2f",
+                        idNota, nomeAluno, semestre, nota));
+            }
+
+        } catch (Exception e) {
+            System.err.println("Erro ao listar notas por curso/semestre no Mongo: " + e.getMessage());
+            return;
+        }
+
+        if (lista.isEmpty()) {
+            System.out.println("(Nenhuma nota encontrada para esse curso/semestre)");
+        } else {
+            lista.forEach(System.out::println);
+        }
     }
 
-    // lista estudantes rapidamente (id, nome, qtd de notas)
-    private void listarEstudantesRapido(java.sql.Connection cn) throws java.sql.SQLException {
-        try (var ps = cn.prepareStatement(SQL_ESTUDANTES_RAPIDO);
-                var rs = ps.executeQuery()) {
-            System.out.println("\nESTUDANTES (qtd de notas):");
-            while (rs.next()) {
-                System.out.printf("  %d - %s | %d%n",
-                        rs.getInt("id_estudante"),
-                        rs.getString("nome"),
-                        rs.getInt("qtd_notas"));
+    // LISTAR NOTAS POR ESTUDANTE
+    public void listarPorEstudantePorId(Scanner in) {
+        System.out.print("ID estudante: ");
+        int idEst = Integer.parseInt(in.nextLine());
+
+        // Buscar o estudante para pegar o nome
+        Document est = estudantes.find(Filters.eq("id_estudante", idEst)).first();
+        if (est == null) {
+            System.out.println("Estudante não encontrado.");
+            return;
+        }
+        String nomeEstudante = est.getString("nome");
+
+        List<String> lista = new ArrayList<>();
+
+        // 1) pegar matrículas do estudante
+        List<Integer> idsMat = new ArrayList<>();
+        try (MongoCursor<Document> cursor = matriculas.find(Filters.eq("id_estudante", idEst)).iterator()) {
+            while (cursor.hasNext()) {
+                Document m = cursor.next();
+                idsMat.add(((Number) m.get("id_matricula")).intValue());
             }
         }
-    }
 
-    public void inserirPorEstudanteId(Scanner in) {
-        String sqlInsert = "INSERT INTO NOTAS (id_matricula, nota_estudante, semestre) VALUES (?,?,?)";
+        if (idsMat.isEmpty()) {
+            System.out.println("Estudante não possui matrículas.");
+            return;
+        }
 
-        try (Connection cn = Conexao.getConnection()) {
-            // 1) lista estudantes para facilitar a escolha
-            listarEstudantesComQtdMats(cn);
+        // 2) listar notas dessas matrículas
+        try (MongoCursor<Document> cursor = notas.find(Filters.in("id_matricula", idsMat))
+                .sort(Sorts.ascending("id_nota"))
+                .iterator()) {
 
-            System.out.print("\nID do estudante: ");
-            int idEst = Integer.parseInt(in.nextLine());
+            while (cursor.hasNext()) {
+                Document n = cursor.next();
+                int idNota = ((Number) n.get("id_nota")).intValue();
+                double nota = ((Number) n.get("nota_estudante")).doubleValue();
+                String semestre = n.getString("semestre");
+                int idMat = ((Number) n.get("id_matricula")).intValue();
 
-            // 2) recupera matrículas do estudante
-            int idMatriculaEscolhida = -1;
-            try (PreparedStatement ps = cn.prepareStatement(SQL_MATRICULAS_DO_ESTUDANTE)) {
-                ps.setInt(1, idEst);
-                try (ResultSet rs = ps.executeQuery()) {
-                    java.util.List<Integer> mats = new java.util.ArrayList<>();
-                    java.util.List<String> labels = new java.util.ArrayList<>();
-                    while (rs.next()) {
-                        mats.add(rs.getInt("id_matricula"));
-                        labels.add(String.format("matricula:%d | %s (%s)",
-                                rs.getInt("id_matricula"),
-                                rs.getString("nome_curso"),
-                                rs.getString("status_matricula")));
-                    }
-
-                    if (mats.isEmpty()) {
-                        System.out.println("Este estudante não possui matrícula. Crie a matrícula primeiro.");
-                        return;
-                    } else if (mats.size() == 1) {
-                        idMatriculaEscolhida = mats.get(0);
-                        System.out.println("Usando " + labels.get(0));
-                    } else {
-                        System.out.println("\nMATRÍCULAS do estudante:");
-                        for (String s : labels)
-                            System.out.println("  " + s);
-                        System.out.print("Digite o ID da matrícula desejada: ");
-                        idMatriculaEscolhida = Integer.parseInt(in.nextLine());
-                        if (!mats.contains(idMatriculaEscolhida)) {
-                            System.out.println("Matrícula inválida.");
-                            return;
-                        }
+                // pega info da matrícula + curso
+                Document m = matriculas.find(Filters.eq("id_matricula", idMat)).first();
+                String nomeCurso = "(desconhecido)";
+                if (m != null) {
+                    int idCurso = ((Number) m.get("id_curso")).intValue();
+                    Document c = cursos.find(Filters.eq("id_curso", idCurso)).first();
+                    if (c != null) {
+                        nomeCurso = c.getString("nome_curso");
                     }
                 }
+
+                // aqui entra o nome do estudante ao lado da matrícula
+                lista.add(String.format("#%d | matrícula %d (%s) | %s | %s | nota: %.2f",
+                        idNota, idMat, nomeEstudante, nomeCurso, semestre, nota));
             }
 
-            // 3) coleta dados da nota
-            System.out.print("Semestre (ex.: 2024.1): ");
-            String semestre = in.nextLine();
-            System.out.print("Nota (ex.: 7.50): ");
-            double nota = Double.parseDouble(in.nextLine());
-
-            // 4) insere NOTA na matrícula escolhida
-            try (PreparedStatement ps = cn.prepareStatement(sqlInsert)) {
-                ps.setInt(1, idMatriculaEscolhida);
-                ps.setDouble(2, nota);
-                ps.setString(3, semestre);
-                System.out.println(ps.executeUpdate() > 0 ? "Nota inserida!" : "Falha ao inserir nota.");
-            }
-
-        } catch (SQLException e) {
-            System.err.println("Erro ao lançar nota por estudante: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("Erro ao listar notas do estudante no Mongo: " + e.getMessage());
+            return;
         }
+
+        if (lista.isEmpty()) {
+            System.out.println("(Nenhuma nota encontrada para esse estudante)");
+        } else {
+            lista.forEach(System.out::println);
+        }
+
     }
 
-    private void listarEstudantesComQtdMats(Connection cn) throws SQLException {
-        try (var ps = cn.prepareStatement(SQL_ESTUDANTES_QTD_MATS);
-                var rs = ps.executeQuery()) {
-            System.out.println("\nESTUDANTES (qtd matrículas):");
-            while (rs.next()) {
-                System.out.printf("  %d - %s | %d%n",
-                        rs.getInt("id_estudante"),
-                        rs.getString("nome"),
-                        rs.getInt("qtd_mats"));
+    // INSERIR NOTA ESCOLHENDO PELO ESTUDANTE
+    public void inserirPorEstudanteId(Scanner in) {
+        System.out.print("ID estudante: ");
+        int idEst = Integer.parseInt(in.nextLine());
+
+        // 1) buscar estudante
+        Document est = estudantes.find(Filters.eq("id_estudante", idEst)).first();
+        if (est == null) {
+            System.out.println("Estudante não encontrado.");
+            return;
+        }
+
+        String nomeEst = est.getString("nome");
+        System.out.println("Estudante: " + nomeEst);
+
+        // 2) listar matrículas desse estudante
+        List<Integer> idsMat = new ArrayList<>();
+
+        try (MongoCursor<Document> cursor = matriculas.find(Filters.eq("id_estudante", idEst))
+                .sort(Sorts.ascending("id_matricula"))
+                .iterator()) {
+
+            System.out.println("\nMATRÍCULAS DO ESTUDANTE:");
+            while (cursor.hasNext()) {
+                Document m = cursor.next();
+                int idMat = ((Number) m.get("id_matricula")).intValue();
+                idsMat.add(idMat);
+
+                int idCurso = ((Number) m.get("id_curso")).intValue();
+                String status = m.getString("status_matricula");
+                String dataStr = m.getString("data_matricula");
+                LocalDate dataMat = null;
+                if (dataStr != null && !dataStr.isBlank()) {
+                    dataMat = LocalDate.parse(dataStr);
+                }
+
+                Document c = cursos.find(Filters.eq("id_curso", idCurso)).first();
+                String nomeCurso = c != null ? c.getString("nome_curso") : "(desconhecido)";
+
+                System.out.printf("  %d - %s | %s | %s%n",
+                        idMat,
+                        nomeCurso,
+                        status,
+                        dataMat != null ? dataMat : "");
             }
         }
-    }
 
+        if (idsMat.isEmpty()) {
+            System.out.println("Estudante não possui matrículas para receber nota.");
+            return;
+        }
+
+        System.out.print("\nEscolha o ID da matrícula para lançar a nota: ");
+        int idMatEscolhido = Integer.parseInt(in.nextLine());
+        if (!idsMat.contains(idMatEscolhido)) {
+            System.out.println("Matrícula inválida para este estudante.");
+            return;
+        }
+
+        double nota = lerDouble(in, "Nota do estudante: ");
+        System.out.print("Semestre (ex: 2024/1): ");
+        String semestre = in.nextLine();
+
+        try {
+            int idNota = getNextId(notas, "id_nota");
+
+            Document doc = new Document()
+                    .append("id_nota", idNota)
+                    .append("id_matricula", idMatEscolhido)
+                    .append("nota_estudante", nota)
+                    .append("semestre", semestre);
+
+            notas.insertOne(doc);
+            System.out.println("Nota inserida! (id_nota = " + idNota + ")");
+        } catch (Exception e) {
+            System.err.println("Erro ao inserir nota no Mongo: " + e.getMessage());
+        }
+    }
 }
