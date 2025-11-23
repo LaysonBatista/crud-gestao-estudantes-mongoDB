@@ -64,7 +64,7 @@ public class CursoController {
                     .append("carga_horaria", ch);
 
             cursos.insertOne(doc);
-            System.out.println("Curso inserido! (id_curso = " + idCurso + ")");
+            System.out.println("Curso inserido!");
         } catch (Exception e) {
             System.err.println("Erro ao inserir curso no Mongo: " + e.getMessage());
         }

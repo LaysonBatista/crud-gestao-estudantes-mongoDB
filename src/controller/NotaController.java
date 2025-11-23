@@ -61,7 +61,6 @@ public class NotaController {
     }
 
     // ================= METÓDOS
-    // ====================================================
 
     // INSERIR NOTA (pedindo id_matricula)
     public void inserir(Scanner in) {

@@ -114,7 +114,7 @@ public class MatriculaController {
                     .append("status_matricula", status);
 
             matriculas.insertOne(doc);
-            System.out.println("Matrícula inserida! (id_matricula = " + idMatricula + ")");
+            System.out.println("Matrícula inserida!");
 
         } catch (Exception e) {
             System.err.println("Erro ao inserir matrícula no Mongo: " + e.getMessage());
