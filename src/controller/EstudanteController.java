@@ -1,207 +1,253 @@
 package controller;
 
-import java.sql.*;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
+
+import org.bson.Document;
+
 import conexion.*;
+
+import com.mongodb.MongoWriteException;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Sorts;
 
 public class EstudanteController {
 
-    // ---------------- SQLs ----------------------------------
-    private static final String SQL_UPDATE = "UPDATE ESTUDANTES SET nome=?, data_nascimento=?, cpf=?, email=? WHERE id_estudante=?";
-    String sqlEst = "INSERT INTO ESTUDANTES (nome, data_nascimento, cpf, email) VALUES (?,?,?,?)";
-    String sqlCursos = "SELECT id_curso, nome_curso FROM CURSOS ORDER BY id_curso";
-    String sqlMat = "INSERT INTO MATRICULAS (data_matricula, status_matricula, id_estudante, id_curso) VALUES (?,?,?,?)";
-    // SQLs em ordem: NOTAS -> MATRICULAS -> ESTUDANTES
-    final String SQL_EXISTE = "SELECT 1 FROM ESTUDANTES WHERE id_estudante = ?";
-    final String SQL_DEL_NOTAS = "DELETE n FROM NOTAS n " +
-            "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-            "WHERE m.id_estudante = ?";
-    final String SQL_DEL_MATS = "DELETE FROM MATRICULAS WHERE id_estudante = ?";
-    final String SQL_DEL_EST = "DELETE FROM ESTUDANTES WHERE id_estudante = ?";
-    final String SQL = "SELECT id_estudante, nome, data_nascimento, cpf, email " +
-            "FROM ESTUDANTES ORDER BY id_estudante";
+    // ---------------- COLEÇÕES DO MONGO ----------------------------------
+    private final MongoCollection<Document> estudantes;
+    private final MongoCollection<Document> cursos;
+    private final MongoCollection<Document> matriculas;
+    private final MongoCollection<Document> notas;
 
-            // ----------------  MÉTODOS  ----------------------------------
+    public EstudanteController() {
+        MongoDatabase db = MongoConnection.getDatabase();
+        this.estudantes = db.getCollection("estudantes");
+        this.cursos = db.getCollection("cursos");
+        this.matriculas = db.getCollection("matriculas");
+        this.notas = db.getCollection("notas");
+    }
+
+    private int getNextId(MongoCollection<Document> col, String field) {
+        Document last = col.find()
+                .sort(Sorts.descending(field))
+                .first();
+
+        if (last == null || last.get(field) == null) {
+            return 1;
+        }
+
+        Object value = last.get(field);
+        if (value instanceof Number) {
+            return ((Number) value).intValue() + 1;
+        }
+        return 1;
+    }
+
+    // ---------------- MÉTODOS ----------------------------------
+
+    // INSERIR (estudante + matrícula)
     public void inserir(Scanner in) {
         System.out.print("Nome: ");
         String nome = in.nextLine();
+
         System.out.print("Data nascimento (AAAA-MM-DD): ");
         LocalDate dn = LocalDate.parse(in.nextLine());
+
         System.out.print("CPF (apenas números): ");
         String cpf = in.nextLine();
+
         System.out.print("Email: ");
         String email = in.nextLine();
 
-        try (Connection cn = Conexao.getConnection()) {
-            cn.setAutoCommit(false); // transação
+        try {
+            // 1) gera ID do estudante
+            int idEstudante = getNextId(estudantes, "id_estudante");
 
-            // 1) cria estudante e pega o ID gerado
-            int idEstudanteGerado;
-            try (PreparedStatement ps = cn.prepareStatement(sqlEst, Statement.RETURN_GENERATED_KEYS)) {
-                ps.setString(1, nome);
-                ps.setDate(2, Date.valueOf(dn));
-                ps.setString(3, cpf);
-                ps.setString(4, email);
-                if (ps.executeUpdate() == 0)
-                    throw new SQLException("Falha ao inserir estudante.");
-                try (ResultSet keys = ps.getGeneratedKeys()) {
-                    if (!keys.next())
-                        throw new SQLException("Sem ID gerado para estudante.");
-                    idEstudanteGerado = keys.getInt(1);
-                }
-            }
+            // 2) cria documento do estudante
+            Document estudanteDoc = new Document()
+                    .append("id_estudante", idEstudante)
+                    .append("nome", nome)
+                    .append("data_nascimento", dn.toString()) // armazenado como String yyyy-MM-dd
+                    .append("cpf", cpf)
+                    .append("email", email);
 
-            // 2) lista cursos para escolher
+            estudantes.insertOne(estudanteDoc);
+
+            // 3) lista cursos para escolher (igual fazia no MySQL)
             System.out.println("\nCURSOS disponíveis:");
-            try (PreparedStatement ps = cn.prepareStatement(sqlCursos);
-                    ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    System.out.printf("  %d - %s%n", rs.getInt("id_curso"), rs.getString("nome_curso"));
+            try (MongoCursor<Document> cursor = cursos.find()
+                    .sort(Sorts.ascending("id_curso"))
+                    .iterator()) {
+
+                while (cursor.hasNext()) {
+                    Document c = cursor.next();
+                    System.out.printf("  %d - %s%n",
+                            c.getInteger("id_curso"),
+                            c.getString("nome_curso"));
                 }
             }
+
             System.out.print("ID do curso para matrícula: ");
             int idCurso = Integer.parseInt(in.nextLine());
 
-            // 3) cria matrícula ATIVA hoje
-            try (PreparedStatement ps = cn.prepareStatement(sqlMat)) {
-                ps.setDate(1, Date.valueOf(LocalDate.now()));
-                ps.setString(2, "Ativo"); // respeita o CHECK ('Ativo','Inativo')
-                ps.setInt(3, idEstudanteGerado);
-                ps.setInt(4, idCurso);
-                if (ps.executeUpdate() == 0)
-                    throw new SQLException("Falha ao criar matrícula.");
+            // (opcional) validar se o curso existe
+            Document cursoDoc = cursos.find(Filters.eq("id_curso", idCurso)).first();
+            if (cursoDoc == null) {
+                System.err.println("Curso não encontrado. Matrícula não criada.");
+                return;
             }
 
-            cn.commit();
+            // 4) cria matricula ATIVA para hoje
+            int idMatricula = getNextId(matriculas, "id_matricula");
+
+            Document matriculaDoc = new Document()
+                    .append("id_matricula", idMatricula)
+                    .append("id_estudante", idEstudante)
+                    .append("id_curso", idCurso)
+                    .append("data_matricula", LocalDate.now().toString())
+                    .append("status_matricula", "Ativo"); // igual ao CHECK do SQL
+
+            matriculas.insertOne(matriculaDoc);
+
             System.out.println("Estudante e matrícula criados com sucesso!");
 
-        } catch (SQLIntegrityConstraintViolationException dup) {
-            System.err.println("CPF/email duplicado ou matrícula violou restrição (talvez já exista).");
+        } catch (MongoWriteException dup) {
+            // cai aqui em caso de duplicidade
+            System.err.println("CPF/email duplicado ou violação de índice único.");
         } catch (Exception e) {
-            System.err.println("Erro ao inserir com matrícula: " + e.getMessage());
+            System.err.println("Erro ao inserir estudante/matrícula no Mongo: " + e.getMessage());
         }
     }
 
+    //ATUALIZAR
     public void atualizar(Scanner in) {
-        listar();
+        listar(); // mostra para escolher
+
         System.out.print("ID do estudante: ");
         int id = Integer.parseInt(in.nextLine());
+
         System.out.print("Nome: ");
         String nome = in.nextLine();
+
         System.out.print("Data nascimento (AAAA-MM-DD): ");
         LocalDate dn = LocalDate.parse(in.nextLine());
+
         System.out.print("CPF: ");
         String cpf = in.nextLine();
+
         System.out.print("Email: ");
         String email = in.nextLine();
 
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_UPDATE)) {
-            ps.setString(1, nome);
-            ps.setDate(2, Date.valueOf(dn));
-            ps.setString(3, cpf);
-            ps.setString(4, email);
-            ps.setInt(5, id);
-            System.out.println(ps.executeUpdate() > 0 ? "Atualizado!" : "Nada atualizado.");
-        } catch (SQLIntegrityConstraintViolationException dup) {
+        try {
+            Document filtro = new Document("id_estudante", id);
+
+            Document novosDados = new Document()
+                    .append("nome", nome)
+                    .append("data_nascimento", dn.toString())
+                    .append("cpf", cpf)
+                    .append("email", email);
+
+            Document update = new Document("$set", novosDados);
+
+            long modificados = estudantes.updateOne(filtro, update).getModifiedCount();
+            System.out.println(modificados > 0 ? "Atualizado!" : "Nada atualizado.");
+
+        } catch (MongoWriteException dup) {
             System.err.println("CPF ou e-mail já existe.");
-        } catch (SQLException e) {
-            System.err.println("Erro ao atualizar estudante: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("Erro ao atualizar estudante no Mongo: " + e.getMessage());
         }
     }
 
-    public void remover(Scanner in) {
+    //REMOVER
+     public void remover(Scanner in) {
         listar();
         System.out.print("ID do estudante: ");
         int id = Integer.parseInt(in.nextLine());
 
-        Connection cn = null;
         try {
-            cn = Conexao.getConnection();
-            cn.setAutoCommit(false); // inicia transação
-            try (PreparedStatement ps = cn.prepareStatement(SQL_EXISTE)) {
-                ps.setInt(1, id);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        System.out.println("ID não encontrado. Nada a remover.");
-                        cn.rollback();
-                        cn.setAutoCommit(true);
-                        return;
-                    }
+            // 0) verifica se existe
+            Document est = estudantes.find(Filters.eq("id_estudante", id)).first();
+            if (est == null) {
+                System.out.println("ID não encontrado. Nada a remover.");
+                return;
+            }
+
+            // 1) pega todas as matriculas desse estudante
+            List<Integer> idsMatriculas = new ArrayList<>();
+            try (MongoCursor<Document> cursor = matriculas.find(Filters.eq("id_estudante", id)).iterator()) {
+                while (cursor.hasNext()) {
+                    Document m = cursor.next();
+                    idsMatriculas.add(((Number) m.get("id_matricula")).intValue());
                 }
             }
-            // 1) apaga as NOTAS das matrículas do estudante
-            try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_NOTAS)) {
-                ps.setInt(1, id);
-                ps.executeUpdate();
+
+            // 2) apaga as NOTAS dessas matriculas
+            if (!idsMatriculas.isEmpty()) {
+                notas.deleteMany(Filters.in("id_matricula", idsMatriculas));
             }
 
-            // 2) apaga as MATRÍCULAS do estudante
-            try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_MATS)) {
-                ps.setInt(1, id);
-                ps.executeUpdate();
-            }
+            // 3) apaga as MATRICULAS do estudante
+            matriculas.deleteMany(Filters.eq("id_estudante", id));
 
-            // 3) apaga o ESTUDANTE
-            int afetados;
-            try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_EST)) {
-                ps.setInt(1, id);
-                afetados = ps.executeUpdate();
-            }
+            // 4) apaga o ESTUDANTE
+            long removidos = estudantes.deleteOne(Filters.eq("id_estudante", id)).getDeletedCount();
 
-            cn.commit();
-            System.out.println(afetados > 0 ? "Removido!" : "Nada removido.");
-        } catch (SQLException e) {
-            try {
-                if (cn != null)
-                    cn.rollback();
-            } catch (SQLException ignore) {
-            }
-            System.err.println("Erro ao remover estudante: " + e.getMessage());
-        } finally {
-            try {
-                if (cn != null) {
-                    cn.setAutoCommit(true);
-                    cn.close();
-                }
-            } catch (SQLException ignore) {
-            }
+            System.out.println(removidos > 0 ? "Removido!" : "Nada removido.");
+        } catch (Exception e) {
+            System.err.println("Erro ao remover estudante no Mongo: " + e.getMessage());
         }
     }
 
-    public void listar() {
-        List<String> lista = new ArrayList<>();
+    //LISTAR
+public void listar() {
+    try (MongoCursor<Document> cursor = estudantes.find()
+            .sort(Sorts.ascending("id_estudante"))
+            .iterator()) {
 
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL);
-                ResultSet rs = ps.executeQuery()) {
+        // Cabeçalho
+        System.out.printf("%-4s | %-25s | %-25s | %-15s | %-12s%n",
+                "ID", "Nome do estudante", "E-mail", "CPF", "Data de Nasc.");
+        System.out.println("-----+---------------------------+---------------------------+-----------------+--------------");
 
-            while (rs.next()) {
-                int id = rs.getInt("id_estudante");
-                String nome = rs.getString("nome");
-                java.time.LocalDate dn = rs.getDate("data_nascimento").toLocalDate();
-                String cpf = maskCpf(rs.getString("cpf")); // deixa bonitinho
-                String email = rs.getString("email");
+        boolean vazio = true;
 
-                lista.add(String.format("#%d | %s | %s | %s | %s",
-                        id, nome, email, cpf, dn)); // id | nome | email | cpf | nascimento
+        while (cursor.hasNext()) {
+            vazio = false;
+            Document doc = cursor.next();
+
+            int id = ((Number) doc.get("id_estudante")).intValue();
+            String nome = doc.getString("nome");
+            String email = doc.getString("email");
+            String cpf = maskCpf(doc.getString("cpf"));
+
+            String dataStr = doc.getString("data_nascimento");
+            String dataNasc = "";
+            if (dataStr != null && !dataStr.isBlank()) {
+                dataNasc = dataStr; // já está no formato yyyy-MM-dd
             }
-        } catch (SQLException e) {
-            System.err.println("Erro ao listar estudantes: " + e.getMessage());
-            return;
+
+            // Linha formatada
+            System.out.printf("%-4s | %-25s | %-25s | %-15s | %-12s%n",
+                    "#" + id, nome, email, cpf, dataNasc);
         }
 
-        if (lista.isEmpty()) {
+        if (vazio) {
             System.out.println("(Nenhum estudante cadastrado)");
-        } else {
-            lista.forEach(System.out::println);
         }
-    }
 
-    // mascara cpf
+    } catch (Exception e) {
+        System.err.println("Erro ao listar estudantes no Mongo: " + e.getMessage());
+    }
+}
+
+
+    // mascara CPF
     private static String maskCpf(String cpf) {
         if (cpf == null)
             return "";
@@ -210,5 +256,4 @@ public class EstudanteController {
             return cpf;
         return d.substring(0, 3) + "." + d.substring(3, 6) + "." + d.substring(6, 9) + "-" + d.substring(9);
     }
-
 }

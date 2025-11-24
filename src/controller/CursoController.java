@@ -1,151 +1,196 @@
 package controller;
-import java.sql.*;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
-import conexion.*;
+
+import org.bson.Document;
+
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Sorts;
+
+import conexion.MongoConnection;
 
 public class CursoController {
-    // SQLs
-    private static final String SQL_INSERT = "INSERT INTO CURSOS (nome_curso, carga_horaria) VALUES (?,?)";
-    private static final String SQL_UPDATE = "UPDATE CURSOS SET nome_curso=?, carga_horaria=? WHERE id_curso=?";
-    //private static final String SQL_DELETE = "DELETE FROM CURSOS WHERE id_curso=?";
-    //private static final String SQL_FINDALL = "SELECT id_curso, nome_curso, carga_horaria FROM CURSOS ORDER BY id_curso";
+    // Coleção
+    private final MongoCollection<Document> cursos;
+    private final MongoCollection<Document> matriculas;
+    private final MongoCollection<Document> notas;
 
+    public CursoController() {
+        MongoDatabase db = MongoConnection.getDatabase();
+        this.cursos = db.getCollection("cursos");
+        this.matriculas = db.getCollection("matriculas");
+        this.notas = db.getCollection("notas");
+    }
+
+    // Gera próximo ID inteiro baseado no maior já existente
+    private int getNextId(MongoCollection<Document> col, String field) {
+        Document last = col.find()
+                .sort(Sorts.descending(field))
+                .first();
+
+        if (last == null || last.get(field) == null) {
+            return 1;
+        }
+
+        Object value = last.get(field);
+        if (value instanceof Number) {
+            return ((Number) value).intValue() + 1;
+        }
+        return 1;
+    }
+
+
+    // ================== MÉTODOS ==================
+
+    //INSERIR CURSO
     public void inserir(Scanner in) {
         System.out.print("Nome do curso: ");
         String nome = in.nextLine();
+
         System.out.print("Carga horária - CH: ");
         int ch = Integer.parseInt(in.nextLine());
 
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_INSERT)) {
-            ps.setString(1, nome);
-            ps.setInt(2, ch);
-            System.out.println(ps.executeUpdate() > 0 ? "Curso inserido!" : "Falha ao inserir.");
-        } catch (SQLException e) {
-            System.err.println("Erro ao inserir curso: " + e.getMessage());
+        try {
+            int idCurso = getNextId(cursos, "id_curso");
+
+            Document doc = new Document()
+                    .append("id_curso", idCurso)
+                    .append("nome_curso", nome)
+                    .append("carga_horaria", ch);
+
+            cursos.insertOne(doc);
+            System.out.println("Curso inserido!");
+        } catch (Exception e) {
+            System.err.println("Erro ao inserir curso no Mongo: " + e.getMessage());
         }
     }
 
+    //ATUALIZAR CURSO 
     public void atualizar(Scanner in) {
         listar();
+
         System.out.print("ID do curso: ");
         int id = Integer.parseInt(in.nextLine());
+
         System.out.print("Novo nome: ");
         String nome = in.nextLine();
+
         System.out.print("Nova carga horária: ");
         int ch = Integer.parseInt(in.nextLine());
 
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL_UPDATE)) {
-            ps.setString(1, nome);
-            ps.setInt(2, ch);
-            ps.setInt(3, id);
-            System.out.println(ps.executeUpdate() > 0 ? "Atualizado!" : "Nada atualizado.");
-        } catch (SQLException e) {
-            System.err.println("Erro ao atualizar curso: " + e.getMessage());
+        try {
+            Document filtro = new Document("id_curso", id);
+
+            Document novosDados = new Document()
+                    .append("nome_curso", nome)
+                    .append("carga_horaria", ch);
+
+            Document update = new Document("$set", novosDados);
+
+            long modificados = cursos.updateOne(filtro, update).getModifiedCount();
+            System.out.println(modificados > 0 ? "Curso atualizado!" : "Nada atualizado.");
+        } catch (Exception e) {
+            System.err.println("Erro ao atualizar curso no Mongo: " + e.getMessage());
         }
     }
 
+    //REMOVER CURSO
     public void remover(Scanner in) {
         listar();
-    System.out.print("ID do curso: ");
-    int id = Integer.parseInt(in.nextLine());
 
-    final String SQL_COUNT_NOTAS =
-        "SELECT COUNT(*) " +
-        "FROM NOTAS n " +
-        "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-        "WHERE m.id_curso = ?";
-    final String SQL_COUNT_MATS =
-        "SELECT COUNT(*) FROM MATRICULAS WHERE id_curso = ?";
+        System.out.print("ID do curso: ");
+        int id = Integer.parseInt(in.nextLine());
 
-    final String SQL_DEL_NOTAS =
-        "DELETE n FROM NOTAS n " +
-        "JOIN MATRICULAS m ON m.id_matricula = n.id_matricula " +
-        "WHERE m.id_curso = ?";
-    final String SQL_DEL_MATS =
-        "DELETE FROM MATRICULAS WHERE id_curso = ?";
-    final String SQL_DEL_CURSO =
-        "DELETE FROM CURSOS WHERE id_curso = ?";
-
-    Connection cn = null;
-    try {
-        cn = Conexao.getConnection();
-        cn.setAutoCommit(false); // inicia transação
-
-        
-        int qtdNotas = 0, qtdMats = 0;
-        try (PreparedStatement ps = cn.prepareStatement(SQL_COUNT_NOTAS)) {
-            ps.setInt(1, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) qtdNotas = rs.getInt(1);
+        try {
+            // verifica se curso existe
+            Document cursoDoc = cursos.find(Filters.eq("id_curso", id)).first();
+            if (cursoDoc == null) {
+                System.out.println("Curso não encontrado.");
+                return;
             }
-        }
-        try (PreparedStatement ps = cn.prepareStatement(SQL_COUNT_MATS)) {
-            ps.setInt(1, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) qtdMats = rs.getInt(1);
+
+            // 1) pega matrículas do curso
+            List<Integer> idsMatriculas = new ArrayList<>();
+            try (MongoCursor<Document> cursor = matriculas
+                    .find(Filters.eq("id_curso", id))
+                    .iterator()) {
+                while (cursor.hasNext()) {
+                    Document m = cursor.next();
+                    idsMatriculas.add(((Number) m.get("id_matricula")).intValue());
+                }
             }
-        }
-        System.out.printf("Isso vai excluir %d nota(s) e %d matrícula(s) desse curso.%n", qtdNotas, qtdMats);
 
-        // 1) NOTAS do curso
-        try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_NOTAS)) {
-            ps.setInt(1, id);
-            ps.executeUpdate();
-        }
+            long qtdMats = idsMatriculas.size();
+            long qtdNotas = 0;
 
-        // 2) MATRÍCULAS do curso
-        try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_MATS)) {
-            ps.setInt(1, id);
-            ps.executeUpdate();
-        }
+            // 2) conta notas ligadas a essas matrículas
+            if (!idsMatriculas.isEmpty()) {
+                qtdNotas = notas.countDocuments(Filters.in("id_matricula", idsMatriculas));
+            }
 
-        // 3) CURSO
-        int afetados;
-        try (PreparedStatement ps = cn.prepareStatement(SQL_DEL_CURSO)) {
-            ps.setInt(1, id);
-            afetados = ps.executeUpdate();
-        }
+            System.out.printf(
+                    "Isso vai excluir %d nota(s) e %d matrícula(s) desse curso.%n",
+                    qtdNotas, qtdMats);
+            System.out.print("Confirmar exclusão? (S/N): ");
+            String resp = in.nextLine();
+            if (!resp.equalsIgnoreCase("s")) {
+                System.out.println("Operação cancelada.");
+                return;
+            }
 
-        cn.commit();
-        System.out.println(afetados > 0 ? "Curso removido!" : "Nada removido.");
-    } catch (SQLException e) {
-        try { if (cn != null) cn.rollback(); } catch (SQLException ignore) {}
-        System.err.println("Erro ao remover curso: " + e.getMessage());
-    } finally {
-        try { if (cn != null) { cn.setAutoCommit(true); cn.close(); } } catch (SQLException ignore) {}
-    }
+            // 3) apaga notas
+            if (!idsMatriculas.isEmpty()) {
+                notas.deleteMany(Filters.in("id_matricula", idsMatriculas));
+            }
+
+            // 4) apaga matrículas
+            matriculas.deleteMany(Filters.eq("id_curso", id));
+
+            // 5) apaga o curso
+            long removidos = cursos.deleteOne(Filters.eq("id_curso", id)).getDeletedCount();
+            System.out.println(removidos > 0 ? "Curso removido!" : "Nada removido.");
+
+        } catch (Exception e) {
+            System.err.println("Erro ao remover curso no Mongo: " + e.getMessage());
+        }
     }
 
-    public void listar() {
-        List<String> lista = new ArrayList<>();
-        final String SQL = "SELECT id_curso, nome_curso, carga_horaria FROM CURSOS ORDER BY id_curso";
-
-        try (Connection cn = Conexao.getConnection();
-                PreparedStatement ps = cn.prepareStatement(SQL);
-                ResultSet rs = ps.executeQuery()) {
-
-            while (rs.next()) {
-                lista.add(String.format("#%d | %s | CH:%d",
-                        rs.getInt("id_curso"),
-                        rs.getString("nome_curso"),
-                        rs.getInt("carga_horaria")));
-            }
-
-        } catch (SQLException e) {
-            System.err.println("Erro ao listar cursos: " + e.getMessage());
-            return;
-        }
+     //LISTAR CURSOS
+   public void listar() {
+    try (MongoCursor<Document> cursor = cursos.find()
+            .sort(Sorts.ascending("id_curso"))
+            .iterator()) {
 
         System.out.println("\n-- CURSOS --");
-        if (lista.isEmpty()) {
-            System.out.println("(Nenhum curso cadastrado)");
-        } else {
-            lista.forEach(System.out::println);
-        }
-    }
+        System.out.printf("%-4s | %-35s | %-5s%n",
+                "ID", "Nome do curso", "CH");
+        System.out.println("-----+-------------------------------------+------");
 
+        boolean vazio = true;
+
+        while (cursor.hasNext()) {
+            vazio = false;
+            Document doc = cursor.next();
+
+            int id = ((Number) doc.get("id_curso")).intValue();
+            String nome = doc.getString("nome_curso");
+            int ch = doc.getInteger("carga_horaria", 0);
+
+            System.out.printf("%-4s | %-35s | %-5d%n",
+                    "#" + id, nome, ch);
+        }
+
+        if (vazio) {
+            System.out.println("(Nenhum curso cadastrado)");
+        }
+
+    } catch (Exception e) {
+        System.err.println("Erro ao listar cursos no Mongo: " + e.getMessage());
+    }
+}
 }
