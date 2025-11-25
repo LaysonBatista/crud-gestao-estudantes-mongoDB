@@ -29,7 +29,7 @@ public class Main {
         "Lucas da Silva de Melo\n" +
         "Sabrina Rosa\n" +
         "Soffia Martins");
-        System.out.println("====================================");
+        System.out.println("=====================================");
     }
         
     public static void main(String[] args) {
@@ -283,7 +283,6 @@ public class Main {
                     break;
                 case 3:
                     limparTela();
-                    System.out.println("\n-- MATRÍCULAS --");
                     matCtl.listar();
                     break;
                 case 4:
@@ -362,7 +361,6 @@ public class Main {
 
     public static int lerOpcao(Scanner input) {
         while (true) {
-            System.out.print("Digite sua opção: ");
             String texto = input.nextLine().trim();
 
             if (texto.isEmpty()) {

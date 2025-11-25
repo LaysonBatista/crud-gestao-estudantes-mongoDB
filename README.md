@@ -12,7 +12,7 @@ O sistema exige que as tabelas existam, então basta compilar o projeto e execut
 
 ### Execução manual
 
-obs: Antes de tudo, inicie o banco de dados MongoDB e Mysql no terminal do Ubunto (certifique-se de estar na pasta "database_services" para executar o comando):
+obs: Antes de tudo, inicie o banco de dados MongoDB e MySQL no terminal do Ubunto (certifique-se de estar na pasta "database_services" para executar o comando):
 ```bash
 docker compose up -d mongo -d mysql
 ```
@@ -68,7 +68,7 @@ java -cp "bin:lib/*:src" Main
     * [utils](src/utils/): Nesse diretório encontram-se scripts de automatização da [tela de informações iniciais](src/utils/splash_screen.java).
 
 
-# crud-gestao-estudantes-MongoDB
+# crud-gestao-estudantes-mongoDB
 
 ## Integrantes
 
