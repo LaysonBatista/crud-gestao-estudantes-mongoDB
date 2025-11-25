@@ -7,7 +7,7 @@ import com.mongodb.client.MongoDatabase;
 public class MongoConnection {
 
     // URL padrão do servidor MongoDB local
-    private static final String URI = "mongodb://localhost:27017";
+    private static final String URI = "mongodb://mongoadmin:secret@localhost:27017/labdatabase?authSource=admin";
 
     // Nome do banco que você quer usar
     private static final String DB_NAME = "labdatabase";

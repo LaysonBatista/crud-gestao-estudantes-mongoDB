@@ -17,7 +17,7 @@ public class Main {
     // Método para exibir cabeçalho do sistema
     public static void exibirCabecalho() {
         System.out.println("====================================");
-        System.out.println("     SISTEMA DE GESTÃO DE ESTUDANTES");
+        System.out.println("  SISTEMA DE GESTÃO DE ESTUDANTES  ");
         System.out.println("====================================");
         splash_screen.exibirContagemRegistros();
         System.out.println("Professor: Howard Roatti");
@@ -58,8 +58,7 @@ public class Main {
             System.out.println("6 - Sair");
             System.out.print("Escolha uma opção: ");
 
-            opcao = input.nextInt();
-            input.nextLine();
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -105,8 +104,8 @@ public class Main {
             System.out.println("2 - Desempenho dos cursos");
             System.out.println("3 - Voltar ao menu principal");
             System.out.print("Escolha uma opção: ");
-            opcao = input.nextInt();
-            input.nextLine();
+
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -156,8 +155,8 @@ public class Main {
             System.out.println("3 - Nota");
             System.out.println("4 - Voltar ao menu principal");
             System.out.print("Escolha uma opção: ");
-            opcao = input.nextInt();
-            input.nextLine();
+            
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -194,8 +193,8 @@ public class Main {
             System.out.println("3 - Nota");
             System.out.println("4 - Voltar ao menu principal");
             System.out.print("Escolha uma opção: ");
-            opcao = input.nextInt();
-            input.nextLine();
+            
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -231,8 +230,8 @@ public class Main {
             System.out.println("3 - Nota");
             System.out.println("4 - Voltar ao menu principal");
             System.out.print("Escolha uma opção: ");
-            opcao = input.nextInt();
-            input.nextLine();
+            
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -269,8 +268,8 @@ public class Main {
             System.out.println("4 - Notas");
             System.out.println("5 - Voltar");
             System.out.print("Escolha uma opção: ");
-            opcao = input.nextInt();
-            input.nextLine();
+            
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1:
@@ -312,8 +311,8 @@ public class Main {
             //System.out.println("4 - Por faixa de NOTA (min..max)");
             System.out.println("5 - Voltar");
             System.out.print("Escolha: ");
-            opcao = input.nextInt();
-            input.nextLine();
+            
+            opcao = lerOpcao(input);
 
             switch (opcao) {
                 case 1: 
@@ -359,6 +358,25 @@ public class Main {
                 System.out.println();
             }
         }     
+    }
+
+    public static int lerOpcao(Scanner input) {
+        while (true) {
+            System.out.print("Digite sua opção: ");
+            String texto = input.nextLine().trim();
+
+            if (texto.isEmpty()) {
+                System.out.println("Erro: Você não digitou nada! Tente novamente.");
+                continue;
+            }
+
+            try {
+                int numero = Integer.parseInt(texto);
+                return numero; // saiu do loop = valor válido
+            } catch (NumberFormatException e) {
+                System.out.println("Erro: '" + texto + "' não é um número válido! Digite apenas números.");
+            }
+        }
     }
 }
 
