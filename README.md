@@ -61,7 +61,7 @@ java -cp "bin:lib/*:src" Main
     * [inserting_samples_records.sql](sql/inserting_samples_records.sql): script responsável pela inserção dos registros fictícios para testes do sistema.
     * [creat_collections_estudantes.js](creat_collections_estudantes.js): script responsável pela criação de colaeções para o MongoDB.
 - [src](src): Nesse diretório estão os scripts do sistema
-    * [conexion](src/conexion): Nesse repositório encontra-se o [módulo de conexão com o banco de dados MySQL](src/conexion/Conexao.java) e o [módulo de conexão com o banco de dados MySQL](src/conexion/MongoConnection.java).
+    * [conexion](src/conexion): Nesse repositório encontra-se o [módulo de conexão com o banco de dados MySQL](src/conexion/Conexao.java) e o [módulo de conexão com o banco de dados MongoDB](src/conexion/MongoConnection.java).
     * [controller](src/controller/): Nesse diretório encontram-sem as classes controladoras, responsáveis por realizar inserção, alteração e exclusão dos registros das tabelas.
     * [model](src/model/): Nesse diretório encontram-ser as classes das entidades descritas no [diagrama relacional](diagrams/DIAGRAMA_RELACIONAL_ESTUDANTES.png).
     * [reports](src/reports/) Nesse diretório encontra-se a [classe](src/reports/Relatorios.java) responsável por gerar todos os relatórios do sistema.
